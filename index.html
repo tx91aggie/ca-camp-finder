@@ -1,0 +1,725 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>California Camp Finder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/maplibre-contour@0.1.0/dist/index.min.js"></script>
+<style>
+/* Layout: full-bleed map; a floating field-guide panel on the left (bottom drawer on phones); a "Can I camp here?" card on click. */
+:root {
+  --bg: #f3f4ef;
+  --panel: #fbfbf8;
+  --fg: #1f2a24;
+  --muted: #5f6b63;
+  --line: #d9ddd3;
+  --accent: #2f5d4e;        /* pine */
+  --accent-fg: #ffffff;
+  --camp: #d98c1f;          /* signal amber: dispersed camping */
+  --ok: #2e7d4f;
+  --warn: #b7791f;
+  --no: #b3402f;
+  --shadow: 0 6px 24px rgba(31, 42, 36, .18);
+  --f-display: "Barlow Condensed", "Arial Narrow", sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141a17; --panel: #1b2420; --fg: #e6ebe6; --muted: #9aa69f; --line: #2e3a34;
+    --accent: #7fb89f; --accent-fg: #0f1512; --camp: #f0a63a; --ok: #5cc28a; --warn: #e2a64a; --no: #f07a66;
+    --shadow: 0 6px 24px rgba(0,0,0,.5); color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141a17; --panel: #1b2420; --fg: #e6ebe6; --muted: #9aa69f; --line: #2e3a34;
+  --accent: #7fb89f; --accent-fg: #0f1512; --camp: #f0a63a; --ok: #5cc28a; --warn: #e2a64a; --no: #f07a66;
+  --shadow: 0 6px 24px rgba(0,0,0,.5); color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--fg); font: 14px/1.45 var(--f-body); overflow: hidden; }
+#map { position: absolute; inset: 0; }
+
+/* ---------- Panel ---------- */
+.panel {
+  position: absolute; top: 12px; left: 12px; bottom: 12px; width: 320px; z-index: 2;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; min-height: 0;
+}
+.panel header { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); display: flex; align-items: flex-start; gap: 10px; }
+.brand { flex: 1; min-width: 0; }
+.brand h1 { font: 700 26px/1 var(--f-display); letter-spacing: .01em; margin: 0; text-transform: uppercase; }
+.brand p { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; }
+.panel-scroll { overflow-y: auto; padding: 4px 16px 16px; flex: 1; min-height: 0; }
+.section { padding-top: 14px; display: grid; gap: 8px; }
+.section h2 {
+  font: 600 13px/1 var(--f-display); text-transform: uppercase; letter-spacing: .12em; color: var(--muted);
+  margin: 0; display: flex; justify-content: space-between; align-items: center;
+}
+.seg { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.seg button { font: 500 12.5px var(--f-body); padding: 7px 4px; border: 0; background: transparent; color: var(--fg); cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); }
+.row { display: grid; grid-template-columns: 18px 1fr auto; gap: 8px; align-items: center; cursor: pointer; padding: 3px 0; }
+.row input { margin: 0; accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
+.row .lbl { min-width: 0; }
+.row .lbl b { font-weight: 500; display: block; }
+.row .lbl small { color: var(--muted); font-size: 11.5px; display: block; line-height: 1.3; }
+.status { font: 400 10.5px var(--f-mono); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.status.err { color: var(--no); }
+.swatch { width: 18px; height: 12px; border-radius: 2px; display: inline-block; border: 1px solid rgba(0,0,0,.15); }
+.dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.3); }
+.legend { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; font-size: 11.5px; color: var(--muted); padding-left: 26px; }
+.legend span { display: flex; align-items: center; gap: 6px; }
+.slider { display: grid; grid-template-columns: 1fr 64px; gap: 8px; align-items: center; padding-left: 26px; font-size: 11.5px; color: var(--muted); }
+.slider input { width: 100%; accent-color: var(--accent); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips button {
+  font: 500 12px var(--f-body); padding: 5px 9px; border-radius: 999px; border: 1px solid var(--line);
+  background: transparent; color: var(--fg); cursor: pointer;
+}
+.chips button:hover { border-color: var(--accent); color: var(--accent); }
+.note { font-size: 11.5px; color: var(--muted); margin: 0; }
+.panel footer { border-top: 1px solid var(--line); padding: 8px 16px; font-size: 11px; color: var(--muted); }
+.icon-btn { border: 1px solid var(--line); background: transparent; color: var(--fg); border-radius: 7px; padding: 5px 8px; cursor: pointer; font: 500 12px var(--f-body); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- Coordinates readout ---------- */
+.readout {
+  position: absolute; left: 344px; bottom: 12px; z-index: 2; background: var(--panel); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 7px; padding: 4px 9px; font: 400 11.5px var(--f-mono);
+  font-variant-numeric: tabular-nums; box-shadow: var(--shadow); pointer-events: none;
+}
+
+/* ---------- Spot card ---------- */
+.spot {
+  position: absolute; right: 12px; top: 12px; width: 340px; max-height: calc(100% - 24px); z-index: 3;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow);
+  overflow-y: auto;
+}
+.spot-head { padding: 12px 14px 10px; display: flex; gap: 10px; align-items: flex-start; border-bottom: 1px solid var(--line); }
+.spot-head .t { flex: 1; min-width: 0; }
+.spot-head h3 { margin: 0; font: 700 21px/1.05 var(--f-display); text-transform: uppercase; letter-spacing: .01em; }
+.spot-head .coords { font: 400 11.5px var(--f-mono); color: var(--muted); margin-top: 3px; }
+.verdict { margin: 12px 14px 0; padding: 10px 12px; border-radius: 8px; border: 1px solid; display: grid; gap: 4px; }
+.verdict b { font: 700 16px/1.1 var(--f-display); text-transform: uppercase; letter-spacing: .04em; }
+.verdict p { margin: 0; font-size: 12.5px; }
+.verdict.ok { border-color: var(--ok); color: var(--ok); background: color-mix(in srgb, var(--ok) 9%, transparent); }
+.verdict.warn { border-color: var(--warn); color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.verdict.no { border-color: var(--no); color: var(--no); background: color-mix(in srgb, var(--no) 9%, transparent); }
+.verdict p { color: var(--fg); }
+.facts { padding: 10px 14px 14px; display: grid; gap: 0; }
+.fact { display: grid; grid-template-columns: 104px 1fr; gap: 10px; padding: 7px 0; border-bottom: 1px dashed var(--line); font-size: 12.5px; }
+.fact:last-child { border-bottom: 0; }
+.fact dt { color: var(--muted); font: 500 11px/1.6 var(--f-display); text-transform: uppercase; letter-spacing: .1em; }
+.fact dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.fact dd .num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.pill { display: inline-block; font: 600 10.5px var(--f-body); text-transform: uppercase; letter-spacing: .06em; padding: 1px 7px; border-radius: 999px; border: 1px solid currentColor; }
+.pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.no { color: var(--no); }
+.spot a { color: var(--accent); }
+.loading { color: var(--muted); font-style: italic; }
+
+/* ---------- MapLibre popups ---------- */
+.maplibregl-popup-content { background: var(--panel); color: var(--fg); border-radius: 8px; padding: 10px 12px; font: 13px/1.4 var(--f-body); box-shadow: var(--shadow); max-width: 280px; }
+.maplibregl-popup-tip { border-top-color: var(--panel) !important; border-bottom-color: var(--panel) !important; }
+.maplibregl-popup-close-button { color: var(--muted); font-size: 18px; }
+.pop h4 { margin: 0 0 2px; font: 700 17px/1.1 var(--f-display); text-transform: uppercase; }
+.pop .k { font: 500 11px var(--f-display); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.pop p { margin: 4px 0 0; font-size: 12.5px; }
+.pop a { color: var(--accent); }
+
+.mobile-toggle { display: none; }
+
+/* ---------- Phones ---------- */
+@media (max-width: 720px) {
+  .panel { top: auto; left: 0; right: 0; bottom: 0; width: auto; height: 52%; border-radius: 12px 12px 0 0; padding-bottom: env(safe-area-inset-bottom, 0px); transition: transform .25s ease; }
+  .panel.collapsed { transform: translateY(calc(100% - 64px)); }
+  .mobile-toggle { display: inline-block; }
+  .spot { left: 10px; right: 10px; width: auto; top: calc(10px + env(safe-area-inset-top, 0px)); max-height: 46%; }
+  .readout { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .panel { transition: none; } }
+</style>
+</head>
+<body>
+<div id="map" role="region" aria-label="Map of California"></div>
+
+<aside class="panel" id="panel">
+  <header>
+    <div class="brand">
+      <h1>California Camp Finder</h1>
+      <p>Public land, legal roads and campsites. Click anywhere on the map to check if you can camp there.</p>
+    </div>
+    <button class="icon-btn mobile-toggle" id="panelToggle" aria-expanded="true">Hide</button>
+  </header>
+
+  <div class="panel-scroll">
+    <div class="section">
+      <h2>Base map</h2>
+      <div class="seg" role="group" aria-label="Base map">
+        <button id="bm-topo" data-bm="topo" aria-pressed="true">USGS Topo</button>
+        <button id="bm-sat" data-bm="sat" aria-pressed="false">Satellite</button>
+        <button id="bm-otm" data-bm="otm" aria-pressed="false">OpenTopo</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Terrain &amp; topography</h2>
+      <label class="row"><input type="checkbox" id="t-3d"><span class="lbl"><b>3D terrain</b><small>Tilt with right-drag or Ctrl+drag</small></span><span class="status" id="s-3d"></span></label>
+      <div class="slider" id="exagRow"><input type="range" id="exag" min="1" max="3" step="0.1" value="1.5" aria-label="Terrain exaggeration"><span id="exagVal">1.5× relief</span></div>
+      <label class="row"><input type="checkbox" id="t-hill"><span class="lbl"><b>Hillshade</b><small>Shaded relief from USGS elevation</small></span><span class="status"></span></label>
+      <label class="row"><input type="checkbox" id="t-contour"><span class="lbl"><b>Contour lines</b><small>Feet, generated from 3DEP elevation (zoom 11+)</small></span><span class="status" id="s-contour"></span></label>
+    </div>
+
+    <div class="section">
+      <h2>Land ownership</h2>
+      <label class="row"><input type="checkbox" id="t-sma" checked><span class="lbl"><b>Public land boundaries</b><small>BLM Surface Management Agency</small></span><span class="status"></span></label>
+      <div class="legend" aria-label="Land manager colors">
+        <span><i class="swatch" style="background:#fee98f"></i>BLM</span>
+        <span><i class="swatch" style="background:#bfe3a7"></i>Forest Service</span>
+        <span><i class="swatch" style="background:#d6b7e3"></i>National Park</span>
+        <span><i class="swatch" style="background:#a7d8d3"></i>Fish &amp; Wildlife</span>
+        <span><i class="swatch" style="background:#bcd6f0"></i>State</span>
+        <span><i class="swatch" style="background:#f6b8c3"></i>Military</span>
+        <span><i class="swatch" style="background:#f9d6a8"></i>Tribal (BIA)</span>
+        <span><i class="swatch" style="background:#fff9c4"></i>Reclamation</span>
+      </div>
+      <div class="slider"><input type="range" id="smaOpacity" min="0.1" max="0.9" step="0.05" value="0.5" aria-label="Land layer opacity"><span id="smaOpacityVal">50% opacity</span></div>
+      <label class="row"><input type="checkbox" id="t-cpad" checked><span class="lbl"><b>State &amp; local parks</b><small>California Protected Areas Database (zoom 9+)</small></span><span class="status" id="s-cpad"></span></label>
+      <label class="row"><input type="checkbox" id="t-wild" checked><span class="lbl"><b>Wilderness areas</b><small>No vehicles or bikes. Backpack camping only.</small></span><span class="status" id="s-wild"></span></label>
+    </div>
+
+    <div class="section">
+      <h2>Roads &amp; trails</h2>
+      <label class="row"><input type="checkbox" id="t-mvum" checked><span class="lbl"><b>Forest Service MVUM</b><small>Legally open roads and trails by vehicle type</small></span><span class="status"></span></label>
+      <label class="row"><input type="checkbox" id="t-gtlf"><span class="lbl"><b>BLM roads &amp; trails</b><small>Ground Transportation Linear Features</small></span><span class="status"></span></label>
+      <label class="row"><input type="checkbox" id="t-fstrail"><span class="lbl"><b>Forest Service trails</b><small>Hiking, horse and OHV system trails</small></span><span class="status"></span></label>
+    </div>
+
+    <div class="section">
+      <h2>Camping</h2>
+      <label class="row"><input type="checkbox" id="t-fscamp" checked><span class="lbl"><b>Forest Service camping</b><small><i class="dot" style="background:var(--camp)"></i> dispersed areas &nbsp;<i class="dot" style="background:#2f7d55"></i> campgrounds</small></span><span class="status" id="s-fscamp"></span></label>
+      <label class="row"><input type="checkbox" id="t-blmcamp" checked><span class="lbl"><b>BLM camping</b><small><i class="dot" style="background:#8a5a1c"></i> BLM campgrounds and camping areas</small></span><span class="status" id="s-blmcamp"></span></label>
+      <label class="row"><input type="checkbox" id="t-osm" checked><span class="lbl"><b>Community campsites</b><small><i class="dot" style="background:#3c6fb0"></i> OpenStreetMap, incl. informal sites (zoom 10+)</small></span><span class="status" id="s-osm"></span></label>
+    </div>
+
+    <div class="section">
+      <h2>Hazards</h2>
+      <label class="row"><input type="checkbox" id="t-fire" checked><span class="lbl"><b>Active fire perimeters</b><small>NIFC, updated every few minutes</small></span><span class="status" id="s-fire"></span></label>
+    </div>
+
+    <div class="section">
+      <h2>Jump to a camping area</h2>
+      <div class="chips" id="places"></div>
+      <p class="note">Public data is approximate. Always follow posted signs, current fire restrictions and the forest's printed MVUM.</p>
+    </div>
+  </div>
+  <footer>Data: USGS, BLM, USDA Forest Service, NIFC, GreenInfo Network (CPAD), Wilderness Connect, © OpenStreetMap contributors.</footer>
+</aside>
+
+<div class="readout" id="readout">Move over the map</div>
+
+<section class="spot" id="spot" hidden aria-live="polite"></section>
+
+<script>
+// ---------------------------------------------------------------- endpoints
+const SVC = {
+  sma:     'https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_Cached_without_PriUnk/MapServer',
+  mvum:    'https://apps.fs.usda.gov/arcx/rest/services/EDW/EDW_MVUM_01/MapServer',
+  fstrail: 'https://apps.fs.usda.gov/arcx/rest/services/EDW/EDW_TrailNFSPublish_01/MapServer',
+  gtlf:    'https://gis.blm.gov/arcgis/rest/services/transportation/BLM_Natl_GTLF/MapServer',
+  recopp:  'https://apps.fs.usda.gov/arcx/rest/services/EDW/EDW_RecreationOpportunities_01/MapServer/0',
+  blmrec:  'https://gis.blm.gov/arcgis/rest/services/recreation/BLM_Natl_Recreation_Sites_Facilities/MapServer',
+  wild:    'https://services1.arcgis.com/ERdCHt0sNM6dENSD/arcgis/rest/services/Wilderness_Areas_in_the_United_States/FeatureServer/0',
+  cpad:    'https://services1.arcgis.com/4ZKi1B1zTblbwgWB/arcgis/rest/services/cpad_2024a_unitsgdb/FeatureServer/0',
+  fire:    'https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Interagency_Perimeters_Current/FeatureServer/0',
+  terrarium: 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',
+  overpass: ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter'],
+};
+const CA_ENVELOPE = '-124.6,32.4,-114.0,42.1';
+const exportUrl = (svc, layers) =>
+  `${svc}/export?bbox={bbox-epsg-3857}&bboxSR=3857&imageSR=3857&size=512,512&format=png32&transparent=true&dpi=96&f=image` +
+  (layers ? `&layers=${encodeURIComponent(layers)}` : '');
+
+// ---------------------------------------------------------------- map
+const map = new maplibregl.Map({
+  container: 'map',
+  style: {
+    version: 8,
+    glyphs: 'https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf',
+    sources: {}, layers: [],
+  },
+  center: [-119.4, 37.2], zoom: 5.6,
+  maxBounds: [[-129, 30.5], [-110, 44]],
+  hash: true,
+  maxPitch: 75,
+  attributionControl: { compact: true },
+});
+map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
+map.addControl(new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: true }), 'top-right');
+map.addControl(new maplibregl.ScaleControl({ unit: 'imperial' }), 'bottom-right');
+
+// Contours from elevation tiles (computed in the browser).
+const demSource = new mlcontour.DemSource({ url: SVC.terrarium, encoding: 'terrarium', maxzoom: 13, worker: true });
+demSource.setupMaplibre(maplibregl);
+
+const setStatus = (id, text, err) => { const el = document.getElementById(id); if (el) { el.textContent = text; el.classList.toggle('err', !!err); } };
+
+// ArcGIS REST: fetch every page of a query as GeoJSON.
+async function arcgisGeojson(url, params, signal) {
+  const out = []; let offset = 0;
+  for (let page = 0; page < 10; page++) {
+    const q = new URLSearchParams({ f: 'geojson', outSR: '4326', resultOffset: offset, resultRecordCount: 1000, ...params });
+    const r = await fetch(`${url}/query?${q}`, { signal });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error.message || 'query failed');
+    const feats = j.features || [];
+    out.push(...feats);
+    const more = j.exceededTransferLimit || (j.properties && j.properties.exceededTransferLimit);
+    if (!more || !feats.length) break;
+    offset += feats.length;
+  }
+  return { type: 'FeatureCollection', features: out };
+}
+const envelope = (extra = {}) => ({ geometry: CA_ENVELOPE, geometryType: 'esriGeometryEnvelope', inSR: '4326', spatialRel: 'esriSpatialRelIntersects', ...extra });
+const emptyFC = () => ({ type: 'FeatureCollection', features: [] });
+
+map.on('load', () => {
+  // ---------- base maps
+  map.addSource('topo', { type: 'raster', tileSize: 256, maxzoom: 16, tiles: ['https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}'], attribution: 'USGS The National Map' });
+  map.addSource('sat', { type: 'raster', tileSize: 256, maxzoom: 16, tiles: ['https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryTopo/MapServer/tile/{z}/{y}/{x}'], attribution: 'USGS NAIP imagery' });
+  map.addSource('otm', { type: 'raster', tileSize: 256, maxzoom: 17, tiles: ['https://a.tile.opentopomap.org/{z}/{x}/{y}.png', 'https://b.tile.opentopomap.org/{z}/{x}/{y}.png', 'https://c.tile.opentopomap.org/{z}/{x}/{y}.png'], attribution: '© OpenTopoMap (CC-BY-SA), © OpenStreetMap' });
+  map.addLayer({ id: 'bm-topo', type: 'raster', source: 'topo' });
+  map.addLayer({ id: 'bm-sat', type: 'raster', source: 'sat', layout: { visibility: 'none' } });
+  map.addLayer({ id: 'bm-otm', type: 'raster', source: 'otm', layout: { visibility: 'none' } });
+
+  // ---------- terrain
+  map.addSource('dem3d', { type: 'raster-dem', tiles: [SVC.terrarium], encoding: 'terrarium', tileSize: 256, maxzoom: 15, attribution: 'Mapzen/AWS Terrain Tiles, USGS 3DEP' });
+  map.addSource('demhs', { type: 'raster-dem', tiles: [SVC.terrarium], encoding: 'terrarium', tileSize: 256, maxzoom: 15 });
+  map.addLayer({ id: 'hillshade', type: 'hillshade', source: 'demhs', layout: { visibility: 'none' },
+    paint: { 'hillshade-exaggeration': 0.45, 'hillshade-shadow-color': '#3b3b33', 'hillshade-highlight-color': '#ffffff' } });
+
+  // ---------- land
+  map.addSource('sma', { type: 'raster', tileSize: 256, maxzoom: 16, tiles: [`${SVC.sma}/tile/{z}/{y}/{x}`], attribution: 'BLM Surface Management Agency' });
+  map.addLayer({ id: 'sma', type: 'raster', source: 'sma', paint: { 'raster-opacity': 0.5 } });
+
+  map.addSource('cpad', { type: 'geojson', data: emptyFC(), attribution: 'CPAD, GreenInfo Network' });
+  map.addLayer({ id: 'cpad-fill', type: 'fill', source: 'cpad', minzoom: 9,
+    paint: { 'fill-color': ['match', ['get', 'MNG_AG_LEV'], 'State', '#5b8fc9', 'County', '#7aa874', 'City', '#7aa874', 'Special District', '#7aa874', 'Non Profit', '#b48ac9', '#9e9e86'], 'fill-opacity': 0.22 } });
+  map.addLayer({ id: 'cpad-line', type: 'line', source: 'cpad', minzoom: 9,
+    paint: { 'line-color': ['match', ['get', 'MNG_AG_LEV'], 'State', '#2f62a0', 'Non Profit', '#7b4f94', '#4d7a48'], 'line-width': 1.2 } });
+
+  map.addSource('wild', { type: 'geojson', data: emptyFC(), attribution: 'Wilderness Connect' });
+  map.addLayer({ id: 'wild-fill', type: 'fill', source: 'wild', paint: { 'fill-color': '#1d5b3a', 'fill-opacity': 0.12 } });
+  map.addLayer({ id: 'wild-line', type: 'line', source: 'wild', paint: { 'line-color': '#1d5b3a', 'line-width': 1.8, 'line-dasharray': [3, 2] } });
+  map.addLayer({ id: 'wild-label', type: 'symbol', source: 'wild', minzoom: 8,
+    layout: { 'text-field': ['get', 'NAME'], 'text-font': ['Noto Sans Medium'], 'text-size': 12, 'symbol-placement': 'point', 'text-max-width': 8 },
+    paint: { 'text-color': '#1d5b3a', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 } });
+
+  // ---------- fire
+  map.addSource('fire', { type: 'geojson', data: emptyFC(), attribution: 'NIFC WFIGS' });
+  map.addLayer({ id: 'fire-fill', type: 'fill', source: 'fire', paint: { 'fill-color': '#e0452b', 'fill-opacity': 0.35 } });
+  map.addLayer({ id: 'fire-line', type: 'line', source: 'fire', paint: { 'line-color': '#b3260f', 'line-width': 2 } });
+  map.addLayer({ id: 'fire-label', type: 'symbol', source: 'fire', minzoom: 7,
+    layout: { 'text-field': ['concat', ['get', 'poly_IncidentName'], ' Fire'], 'text-font': ['Noto Sans Medium'], 'text-size': 12 },
+    paint: { 'text-color': '#8c1d0a', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 } });
+
+  // ---------- contours (feet)
+  map.addSource('contours', { type: 'vector', maxzoom: 15, tiles: [demSource.contourProtocolUrl({
+    multiplier: 3.28084, overzoom: 1,
+    thresholds: { 11: [200, 1000], 12: [100, 500], 13: [100, 500], 14: [40, 200], 15: [20, 100] },
+    elevationKey: 'ele', levelKey: 'level', contourLayer: 'contours',
+  })] });
+  map.addLayer({ id: 'contour-lines', type: 'line', source: 'contours', 'source-layer': 'contours', minzoom: 11, layout: { visibility: 'none' },
+    paint: { 'line-color': '#8a5a2b', 'line-opacity': 0.55, 'line-width': ['match', ['get', 'level'], 1, 1.3, 0.6] } });
+  map.addLayer({ id: 'contour-labels', type: 'symbol', source: 'contours', 'source-layer': 'contours', minzoom: 13, filter: ['>', ['get', 'level'], 0],
+    layout: { visibility: 'none', 'symbol-placement': 'line', 'symbol-spacing': 400, 'text-pitch-alignment': 'viewport', 'text-field': ['concat', ['number-format', ['get', 'ele'], {}], "'"], 'text-font': ['Noto Sans Regular'], 'text-size': 10 },
+    paint: { 'text-color': '#6b4320', 'text-halo-color': '#ffffff', 'text-halo-width': 1.2 } });
+
+  // ---------- roads & trails (live ArcGIS map images)
+  map.addSource('gtlf', { type: 'raster', tileSize: 512, tiles: [exportUrl(SVC.gtlf)], attribution: 'BLM GTLF' });
+  map.addLayer({ id: 'gtlf', type: 'raster', source: 'gtlf', minzoom: 9, layout: { visibility: 'none' } });
+  map.addSource('fstrail', { type: 'raster', tileSize: 512, tiles: [exportUrl(SVC.fstrail)], attribution: 'USDA Forest Service' });
+  map.addLayer({ id: 'fstrail', type: 'raster', source: 'fstrail', minzoom: 9, layout: { visibility: 'none' } });
+  map.addSource('mvum', { type: 'raster', tileSize: 512, tiles: [exportUrl(SVC.mvum, 'show:1,2')], attribution: 'USDA Forest Service MVUM' });
+  map.addLayer({ id: 'mvum', type: 'raster', source: 'mvum', minzoom: 8 });
+
+  // ---------- campsites
+  const campCircle = (color, extra = {}) => ({
+    'circle-color': color, 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1.6,
+    'circle-radius': ['interpolate', ['linear'], ['zoom'], 6, 3.5, 10, 6, 14, 8], ...extra,
+  });
+  const campLabel = (src, field, color) => ({
+    id: `${src}-label`, type: 'symbol', source: src, minzoom: 11,
+    layout: { 'text-field': ['get', field], 'text-font': ['Noto Sans Medium'], 'text-size': 11.5, 'text-offset': [0, 1.1], 'text-anchor': 'top', 'text-max-width': 9, 'text-optional': true },
+    paint: { 'text-color': color, 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 },
+  });
+  map.addSource('osm', { type: 'geojson', data: emptyFC(), attribution: '© OpenStreetMap contributors' });
+  map.addLayer({ id: 'osm', type: 'circle', source: 'osm', paint: campCircle('#3c6fb0', { 'circle-stroke-width': ['case', ['get', 'informal'], 0, 1.6], 'circle-opacity': ['case', ['get', 'informal'], 0.85, 1] }) });
+  map.addLayer(campLabel('osm', 'name', '#24497a'));
+  map.addSource('blmcamp', { type: 'geojson', data: emptyFC() });
+  map.addLayer({ id: 'blmcamp', type: 'circle', source: 'blmcamp', paint: campCircle('#8a5a1c') });
+  map.addLayer(campLabel('blmcamp', 'name', '#5c3b10'));
+  map.addSource('fscamp', { type: 'geojson', data: emptyFC() });
+  map.addLayer({ id: 'fscamp', type: 'circle', source: 'fscamp',
+    paint: campCircle(['case', ['==', ['get', 'markeractivity'], 'Dispersed Camping'], '#d98c1f', '#2f7d55'],
+      { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 6, ['case', ['==', ['get', 'markeractivity'], 'Dispersed Camping'], 5, 3.5], 10, 7, 14, 9] }) });
+  map.addLayer(campLabel('fscamp', 'recareaname', '#1f4f37'));
+
+  // ---------- click marker
+  map.addSource('pick', { type: 'geojson', data: emptyFC() });
+  map.addLayer({ id: 'pick', type: 'circle', source: 'pick', paint: { 'circle-radius': 7, 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': '#111', 'circle-stroke-width': 2.5 } });
+
+  wireUi();
+  loadStatic();
+  map.on('moveend', onMove);
+  onMove();
+});
+
+// ---------------------------------------------------------------- static loads (once)
+async function loadStatic() {
+  // Forest Service campgrounds + dispersed camping areas
+  setStatus('s-fscamp', 'loading…');
+  arcgisGeojson(SVC.recopp, envelope({ where: "markeractivitygroup LIKE '%Camping%'",
+    outFields: 'recareaname,markeractivity,recareaurl,openstatus,forestname,open_season_start,open_season_end,feedescription,restrictions' }))
+    .then(fc => { map.getSource('fscamp').setData(fc); setStatus('s-fscamp', fc.features.length.toLocaleString()); })
+    .catch(e => setStatus('s-fscamp', 'failed', true));
+
+  // BLM camping (RIDB rec areas + facilities)
+  setStatus('s-blmcamp', 'loading…');
+  Promise.all([
+    arcgisGeojson(`${SVC.blmrec}/2`, envelope({ where: '1=1', outFields: 'RecAreaName,RecAreaDescription,StayLimit,RecAreaFeeDescription,BLMRecURL' })),
+    arcgisGeojson(`${SVC.blmrec}/8`, envelope({ where: '1=1', outFields: 'FacilityName,FacilityDescription,FacilityTypeDescription,StayLimit,FacilityUseFeeDescription,BLMFacURL,Reservable' })),
+  ]).then(([areas, facs]) => {
+    const norm = (f, kind) => ({ ...f, properties: {
+      kind, name: f.properties.RecAreaName || f.properties.FacilityName,
+      desc: f.properties.RecAreaDescription || f.properties.FacilityDescription || '',
+      stay: f.properties.StayLimit || '', fee: f.properties.RecAreaFeeDescription || f.properties.FacilityUseFeeDescription || '',
+      url: f.properties.BLMRecURL || f.properties.BLMFacURL || '' } });
+    const fc = { type: 'FeatureCollection', features: [...areas.features.map(f => norm(f, 'BLM camping area')), ...facs.features.map(f => norm(f, 'BLM campground'))] };
+    map.getSource('blmcamp').setData(fc); setStatus('s-blmcamp', fc.features.length.toLocaleString());
+  }).catch(() => setStatus('s-blmcamp', 'failed', true));
+
+  // Wilderness (California only, simplified)
+  setStatus('s-wild', 'loading…');
+  arcgisGeojson(SVC.wild, { where: "STATE='CA'", outFields: 'NAME,Agency,URL,Acreage', maxAllowableOffset: 0.0015, geometryPrecision: 5 })
+    .then(fc => { map.getSource('wild').setData(fc); setStatus('s-wild', fc.features.length.toLocaleString()); })
+    .catch(() => setStatus('s-wild', 'failed', true));
+
+  // Active fire perimeters
+  setStatus('s-fire', 'loading…');
+  arcgisGeojson(SVC.fire, envelope({ where: '1=1', outFields: 'poly_IncidentName,poly_GISAcres,attr_PercentContained,attr_FireDiscoveryDateTime', maxAllowableOffset: 0.0005, geometryPrecision: 5 }))
+    .then(fc => { map.getSource('fire').setData(fc); setStatus('s-fire', fc.features.length ? `${fc.features.length} active` : 'none active'); })
+    .catch(() => setStatus('s-fire', 'failed', true));
+}
+
+// ---------------------------------------------------------------- viewport loads
+let moveTimer, cpadCtl, osmCtl;
+const osmCache = new Map();
+const osmDone = new Set();
+function onMove() {
+  clearTimeout(moveTimer);
+  moveTimer = setTimeout(() => { loadCpad(); loadOsm(); }, 350);
+}
+const bboxStr = (b) => [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map(v => v.toFixed(4)).join(',');
+
+async function loadCpad() {
+  if (!document.getElementById('t-cpad').checked) return;
+  const z = map.getZoom();
+  if (z < 9) { setStatus('s-cpad', 'zoom in'); return; }
+  cpadCtl?.abort(); cpadCtl = new AbortController();
+  setStatus('s-cpad', 'loading…');
+  try {
+    const fc = await arcgisGeojson(SVC.cpad, {
+      where: "MNG_AG_LEV <> 'Federal'", geometry: bboxStr(map.getBounds()), geometryType: 'esriGeometryEnvelope', inSR: '4326',
+      spatialRel: 'esriSpatialRelIntersects', outFields: 'UNIT_NAME,MNG_AGENCY,MNG_AG_LEV,ACCESS_TYP,PARK_URL',
+      maxAllowableOffset: (360 / (512 * 2 ** z)).toFixed(7), geometryPrecision: 6,
+    }, cpadCtl.signal);
+    map.getSource('cpad').setData(fc);
+    setStatus('s-cpad', fc.features.length.toLocaleString());
+  } catch (e) { if (e.name !== 'AbortError') setStatus('s-cpad', 'failed', true); }
+}
+
+async function loadOsm() {
+  if (!document.getElementById('t-osm').checked) return;
+  if (map.getZoom() < 10) { setStatus('s-osm', osmCache.size ? `${osmCache.size} · zoom in` : 'zoom in'); return; }
+  // Snap requests to a 0.25° grid so panning back and forth reuses results.
+  const b = map.getBounds(), step = 0.25;
+  const s = Math.floor(b.getSouth() / step) * step, w = Math.floor(b.getWest() / step) * step;
+  const n = Math.ceil(b.getNorth() / step) * step, e = Math.ceil(b.getEast() / step) * step;
+  const key = [s, w, n, e].join(',');
+  if (osmDone.has(key)) return;
+  osmCtl?.abort(); osmCtl = new AbortController();
+  setStatus('s-osm', 'loading…');
+  const q = `[out:json][timeout:25];(node["tourism"~"^(camp_site|camp_pitch)$"](${s},${w},${n},${e});way["tourism"="camp_site"](${s},${w},${n},${e}););out center tags 800;`;
+  for (const url of SVC.overpass) {
+    try {
+      const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: osmCtl.signal });
+      if (!r.ok) throw new Error(r.status);
+      const j = await r.json();
+      for (const el of j.elements) {
+        const lon = el.lon ?? el.center?.lon, lat = el.lat ?? el.center?.lat;
+        if (lon == null) continue;
+        const t = el.tags || {};
+        const type = t.camp_site || (t.tourism === 'camp_pitch' ? 'pitch' : '');
+        osmCache.set(el.type + el.id, { type: 'Feature', geometry: { type: 'Point', coordinates: [lon, lat] }, properties: {
+          name: t.name || '', osmType: el.type, osmId: el.id, campType: type,
+          informal: ['basic', 'informal', 'backcountry', 'pitch'].includes(type) || t.informal === 'yes',
+          fee: t.fee || '', toilets: t.toilets || '', water: t.drinking_water || '', tents: t.tents || '', caravans: t.caravans || '', operator: t.operator || '', website: t.website || '' } });
+      }
+      osmDone.add(key);
+      map.getSource('osm').setData({ type: 'FeatureCollection', features: [...osmCache.values()] });
+      setStatus('s-osm', osmCache.size.toLocaleString());
+      return;
+    } catch (err) { if (err.name === 'AbortError') return; }
+  }
+  // Public Overpass servers rate-limit; try again shortly.
+  setStatus('s-osm', 'busy, retrying', true);
+  setTimeout(loadOsm, 5000);
+}
+
+// ---------------------------------------------------------------- UI wiring
+const TOGGLES = {
+  't-hill': ['hillshade'],
+  't-contour': ['contour-lines', 'contour-labels'],
+  't-sma': ['sma'],
+  't-cpad': ['cpad-fill', 'cpad-line'],
+  't-wild': ['wild-fill', 'wild-line', 'wild-label'],
+  't-mvum': ['mvum'],
+  't-gtlf': ['gtlf'],
+  't-fstrail': ['fstrail'],
+  't-fscamp': ['fscamp', 'fscamp-label'],
+  't-blmcamp': ['blmcamp', 'blmcamp-label'],
+  't-osm': ['osm', 'osm-label'],
+  't-fire': ['fire-fill', 'fire-line', 'fire-label'],
+};
+function wireUi() {
+  for (const [id, layers] of Object.entries(TOGGLES)) {
+    const box = document.getElementById(id);
+    const apply = () => {
+      layers.forEach(l => map.setLayoutProperty(l, 'visibility', box.checked ? 'visible' : 'none'));
+      if (box.checked && (id === 't-cpad' || id === 't-osm')) onMove();
+    };
+    box.addEventListener('change', apply); apply();
+  }
+  if (map.getZoom() < 11) setStatus('s-contour', 'zoom 11+');
+  map.on('zoomend', () => setStatus('s-contour', map.getZoom() < 11 ? 'zoom 11+' : ''));
+
+  // base maps
+  document.querySelectorAll('[data-bm]').forEach(btn => btn.addEventListener('click', () => {
+    document.querySelectorAll('[data-bm]').forEach(b => {
+      const on = b === btn; b.setAttribute('aria-pressed', on);
+      map.setLayoutProperty(`bm-${b.dataset.bm}`, 'visibility', on ? 'visible' : 'none');
+    });
+  }));
+
+  // 3D terrain
+  const t3d = document.getElementById('t-3d'), exag = document.getElementById('exag');
+  const setTerrain = () => {
+    if (t3d.checked) {
+      map.setTerrain({ source: 'dem3d', exaggeration: +exag.value });
+      if (map.getPitch() < 30) map.easeTo({ pitch: 60, duration: 800 });
+    } else { map.setTerrain(null); map.easeTo({ pitch: 0, duration: 600 }); }
+  };
+  t3d.addEventListener('change', setTerrain);
+  exag.addEventListener('input', () => { document.getElementById('exagVal').textContent = `${(+exag.value).toFixed(1)}× relief`; if (t3d.checked) setTerrain(); });
+
+  const op = document.getElementById('smaOpacity');
+  op.addEventListener('input', () => { map.setPaintProperty('sma', 'raster-opacity', +op.value); document.getElementById('smaOpacityVal').textContent = `${Math.round(op.value * 100)}% opacity`; });
+
+  // phone drawer
+  const panel = document.getElementById('panel'), pt = document.getElementById('panelToggle');
+  pt.addEventListener('click', () => { const c = panel.classList.toggle('collapsed'); pt.textContent = c ? 'Layers' : 'Hide'; pt.setAttribute('aria-expanded', !c); });
+
+  // places
+  const PLACES = [
+    ['Alabama Hills (BLM)', [-118.128, 36.607], 12.5],
+    ['Trona Pinnacles (BLM)', [-117.366, 35.618], 12.5],
+    ['Buttermilks, Bishop', [-118.53, 37.33], 12],
+    ['Mammoth Lakes Basin', [-118.99, 37.62], 12],
+    ['Eldorado NF, Ice House', [-120.35, 38.83], 11.5],
+    ['Big Sur ridge, Los Padres', [-121.43, 35.97], 11.5],
+    ['Mojave Trails (BLM)', [-115.7, 34.65], 10.5],
+    ['Shasta-Trinity NF', [-122.2, 41.05], 10.5],
+  ];
+  const wrap = document.getElementById('places');
+  PLACES.forEach(([name, c, z]) => {
+    const b = document.createElement('button'); b.type = 'button'; b.textContent = name;
+    b.addEventListener('click', () => { map.flyTo({ center: c, zoom: z, essential: true }); if (matchMedia('(max-width:720px)').matches) pt.click(); });
+    wrap.appendChild(b);
+  });
+
+  // coordinate readout
+  const ro = document.getElementById('readout');
+  map.on('mousemove', e => { ro.textContent = `${e.lngLat.lat.toFixed(5)}, ${e.lngLat.lng.toFixed(5)}  ·  z${map.getZoom().toFixed(1)}`; });
+
+  // pointer cursor on campsites
+  ['fscamp', 'blmcamp', 'osm'].forEach(l => {
+    map.on('mouseenter', l, () => map.getCanvas().style.cursor = 'pointer');
+    map.on('mouseleave', l, () => map.getCanvas().style.cursor = '');
+  });
+
+  map.on('click', onMapClick);
+}
+
+// ---------------------------------------------------------------- click handling
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const strip = (html, n = 260) => { const d = document.createElement('div'); d.innerHTML = html || ''; const t = (d.textContent || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n) + '…' : t; };
+
+function onMapClick(e) {
+  const hits = map.queryRenderedFeatures(e.point, { layers: ['fscamp', 'blmcamp', 'osm'].filter(l => map.getLayoutProperty(l, 'visibility') !== 'none') });
+  if (hits.length) return campPopup(hits[0], e.lngLat);
+  checkSpot(e.lngLat);
+}
+
+function campPopup(f, lngLat) {
+  const p = f.properties; let html;
+  if (f.layer.id === 'fscamp') {
+    html = `<div class="pop"><div class="k">${esc(p.markeractivity)} · ${esc(p.forestname)}</div><h4>${esc(p.recareaname)}</h4>
+      ${p.openstatus ? `<p><span class="pill ${/open/i.test(p.openstatus) ? 'ok' : 'warn'}">${esc(p.openstatus)}</span></p>` : ''}
+      ${p.feedescription ? `<p>${esc(strip(p.feedescription, 140))}</p>` : ''}
+      ${p.restrictions ? `<p><b>Restrictions:</b> ${esc(strip(p.restrictions, 160))}</p>` : ''}
+      ${p.recareaurl ? `<p><a href="${esc(p.recareaurl)}" target="_blank" rel="noopener">Forest Service page ↗</a></p>` : ''}</div>`;
+  } else if (f.layer.id === 'blmcamp') {
+    html = `<div class="pop"><div class="k">${esc(p.kind)}</div><h4>${esc(p.name)}</h4>
+      ${p.stay ? `<p><b>Stay limit:</b> ${esc(strip(p.stay, 80))}</p>` : ''}
+      ${p.fee ? `<p><b>Fees:</b> ${esc(strip(p.fee, 120))}</p>` : ''}
+      ${p.desc ? `<p>${esc(strip(p.desc, 180))}</p>` : ''}
+      ${p.url ? `<p><a href="${esc(p.url)}" target="_blank" rel="noopener">BLM page ↗</a></p>` : ''}</div>`;
+  } else {
+    const yes = v => v === 'yes' ? 'yes' : v === 'no' ? 'no' : '';
+    const bits = [['Fee', p.fee], ['Toilets', yes(p.toilets)], ['Water', yes(p.water)], ['Tents', yes(p.tents)], ['RVs', yes(p.caravans)]].filter(x => x[1]);
+    html = `<div class="pop"><div class="k">OpenStreetMap · ${p.informal ? 'informal / dispersed site' : 'campsite'}</div><h4>${esc(p.name || 'Unnamed campsite')}</h4>
+      ${bits.length ? `<p>${bits.map(([k, v]) => `<b>${k}:</b> ${esc(v)}`).join(' · ')}</p>` : ''}
+      ${p.operator ? `<p>Operator: ${esc(p.operator)}</p>` : ''}
+      <p><a href="https://www.openstreetmap.org/${esc(p.osmType)}/${esc(p.osmId)}" target="_blank" rel="noopener">View on OpenStreetMap ↗</a></p></div>`;
+  }
+  new maplibregl.Popup({ offset: 10, maxWidth: '290px' }).setLngLat(f.geometry.coordinates || lngLat).setHTML(html).addTo(map);
+}
+
+// Elevation + slope from Terrarium tiles at zoom 13 (~15 m per pixel in California).
+const demTiles = new Map();
+function demTile(z, x, y) {
+  const k = `${z}/${x}/${y}`;
+  if (!demTiles.has(k)) demTiles.set(k, new Promise((res, rej) => {
+    const img = new Image(); img.crossOrigin = 'anonymous';
+    img.onload = () => { const c = document.createElement('canvas'); c.width = c.height = 256; const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0); res(ctx.getImageData(0, 0, 256, 256).data); };
+    img.onerror = rej; img.src = SVC.terrarium.replace('{z}', z).replace('{x}', x).replace('{y}', y);
+  }));
+  return demTiles.get(k);
+}
+async function elevSlope(lng, lat) {
+  const z = 13, n = 2 ** z, latR = lat * Math.PI / 180;
+  const xf = (lng + 180) / 360 * n, yf = (1 - Math.log(Math.tan(latR) + 1 / Math.cos(latR)) / Math.PI) / 2 * n;
+  const x = Math.floor(xf), y = Math.floor(yf);
+  const px = Math.min(254, Math.max(1, Math.floor((xf - x) * 256))), py = Math.min(254, Math.max(1, Math.floor((yf - y) * 256)));
+  const d = await demTile(z, x, y);
+  const e = (i, j) => { const k = ((py + j) * 256 + (px + i)) * 4; return d[k] * 256 + d[k + 1] + d[k + 2] / 256 - 32768; };
+  const cell = 40075016.686 * Math.cos(latR) / n / 256;
+  const dzdx = ((e(1, -1) + 2 * e(1, 0) + e(1, 1)) - (e(-1, -1) + 2 * e(-1, 0) + e(-1, 1))) / (8 * cell);
+  const dzdy = ((e(-1, 1) + 2 * e(0, 1) + e(1, 1)) - (e(-1, -1) + 2 * e(0, -1) + e(1, -1))) / (8 * cell);
+  return { elevM: e(0, 0), slope: Math.atan(Math.hypot(dzdx, dzdy)) * 180 / Math.PI };
+}
+
+const getJson = (url, params) => fetch(`${url}?${new URLSearchParams({ f: 'json', ...params })}`).then(r => r.json());
+const pointQuery = (svc, lng, lat, outFields, where = '1=1') => getJson(`${svc}/query`, { where, geometry: `${lng},${lat}`, geometryType: 'esriGeometryPoint', inSR: '4326', spatialRel: 'esriSpatialRelIntersects', outFields, returnGeometry: 'false' });
+
+const AGENCY = {
+  BLM: ['Bureau of Land Management', 'ok'], USFS: ['U.S. Forest Service', 'ok'], USDA: ['U.S. Dept. of Agriculture', 'warn'],
+  NPS: ['National Park Service', 'warn'], FWS: ['U.S. Fish & Wildlife Service', 'no'], USBR: ['Bureau of Reclamation', 'warn'],
+  USACE: ['Army Corps of Engineers', 'warn'], BIA: ['Tribal land (Bureau of Indian Affairs)', 'no'], ST: ['State of California', 'warn'],
+  LG: ['Local government', 'no'], PVT: ['Private', 'no'], UND: ['Undetermined', 'no'], OTHFE: ['Other federal', 'warn'], USCG: ['U.S. Coast Guard', 'no'],
+  ARMY: ['U.S. Army', 'no'], NAVY: ['U.S. Navy', 'no'], USAF: ['U.S. Air Force', 'no'], USMC: ['U.S. Marine Corps', 'no'], DOD: ['Department of Defense', 'no'],
+};
+const AGENCY_RULES = {
+  BLM: 'Dispersed camping is generally allowed on BLM land for up to 14 days in a 28-day period. Use existing sites and watch for posted closures.',
+  USFS: 'Dispersed camping is generally allowed in national forests outside developed areas. Park only along roads the MVUM shows as open, use existing sites, and stay at most 14 days.',
+  NPS: 'National parks allow camping only in campgrounds or with a backcountry permit. A few, like Mojave National Preserve, also have designated roadside sites.',
+  FWS: 'Wildlife refuges almost never allow camping.',
+  USBR: 'Reclamation land varies. Camping is often limited to designated sites around reservoirs.',
+  USACE: 'Corps of Engineers land usually limits camping to designated campgrounds.',
+  ST: 'State land in California usually limits camping to designated campgrounds. State parks prohibit dispersed camping.',
+  USDA: 'Federal land managed by USDA. Check local rules.',
+  OTHFE: 'Federal land with special rules. Check with the managing agency.',
+  BIA: 'Tribal land. Camping requires the tribe’s permission.',
+};
+
+let spotSeq = 0;
+async function checkSpot(ll) {
+  const seq = ++spotSeq, { lng, lat } = ll;
+  map.getSource('pick').setData({ type: 'FeatureCollection', features: [{ type: 'Feature', geometry: { type: 'Point', coordinates: [lng, lat] }, properties: {} }] });
+  const spot = document.getElementById('spot');
+  spot.hidden = false;
+  spot.innerHTML = `<div class="spot-head"><div class="t"><h3>Can I camp here?</h3><div class="coords">${lat.toFixed(5)}, ${lng.toFixed(5)}</div></div><button class="icon-btn" id="spotClose" aria-label="Close">Close</button></div>
+    <div class="facts"><p class="loading">Checking land manager, wilderness, parks, roads and fire…</p></div>`;
+  document.getElementById('spotClose').onclick = closeSpot;
+
+  const b = map.getBounds(), cv = map.getCanvas();
+  const [sma, wild, cpad, mvum, terr] = await Promise.allSettled([
+    getJson(`${SVC.sma}/identify`, { geometry: `${lng},${lat}`, geometryType: 'esriGeometryPoint', sr: '4326', layers: 'all:1', tolerance: '0',
+      mapExtent: `${lng - 0.01},${lat - 0.01},${lng + 0.01},${lat + 0.01}`, imageDisplay: '100,100,96', returnGeometry: 'false' }),
+    pointQuery(SVC.wild, lng, lat, 'NAME,Agency,URL'),
+    pointQuery(SVC.cpad, lng, lat, 'UNIT_NAME,MNG_AGENCY,MNG_AG_LEV,ACCESS_TYP,PARK_URL', "MNG_AG_LEV <> 'Federal'"),
+    map.getZoom() >= 10 ? getJson(`${SVC.mvum}/identify`, { geometry: `${lng},${lat}`, geometryType: 'esriGeometryPoint', sr: '4326', layers: 'all:1,2', tolerance: '12',
+      mapExtent: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(','), imageDisplay: `${cv.clientWidth},${cv.clientHeight},96`, returnGeometry: 'false' }) : Promise.resolve(null),
+    elevSlope(lng, lat),
+  ]);
+  if (seq !== spotSeq) return;
+
+  const val = (r) => r.status === 'fulfilled' ? r.value : null;
+  const smaAttr = val(sma)?.results?.[0]?.attributes;
+  const code = smaAttr?.ADMIN_AGENCY_CODE || (val(sma) ? 'PVT' : null);
+  const wildF = val(wild)?.features?.[0]?.attributes;
+  const cpadF = val(cpad)?.features?.[0]?.attributes;
+  const road = val(mvum)?.results?.[0];
+  const t = val(terr);
+  const fire = map.queryRenderedFeatures(map.project(ll), { layers: ['fire-fill'] })[0];
+
+  // ---- verdict
+  let level, title, body;
+  const [agName, agLevel] = AGENCY[code] || [code ? `Agency code ${code}` : 'Unknown', 'warn'];
+  if (!code) { level = 'warn'; title = 'Couldn’t reach the land service'; body = 'The land ownership lookup failed. Try again in a moment.'; }
+  else if (agLevel === 'no' || code === 'PVT' || code === 'UND') {
+    level = 'no'; title = code === 'PVT' || code === 'UND' ? 'Probably private land' : 'Camping not allowed';
+    body = code === 'PVT' || code === 'UND' ? 'This spot isn’t in federal or state public land records. Assume it’s private and get the owner’s permission.' : (AGENCY_RULES[code] || `${agName} land is closed to public camping.`);
+  } else { level = agLevel; title = agLevel === 'ok' ? 'Dispersed camping likely allowed' : 'Designated sites only'; body = AGENCY_RULES[code] || 'Check with the managing agency.'; }
+  if (cpadF && cpadF.MNG_AG_LEV !== 'Federal' && level === 'ok') { level = 'warn'; title = 'Check park rules'; body = `This spot is inside ${cpadF.UNIT_NAME}, managed by ${cpadF.MNG_AGENCY}, which usually has its own camping rules.`; }
+  if (wildF && level !== 'no') { level = 'warn'; title = 'Wilderness: walk-in camping only'; body = `${wildF.NAME} is federal wilderness. No vehicles or bikes. Backpack camping is allowed, and some areas need a permit.`; }
+  if (fire) { level = 'no'; title = 'Inside an active fire'; body = `This spot is inside the ${fire.properties.poly_IncidentName} Fire perimeter. Expect closures.`; }
+
+  // ---- facts
+  const facts = [];
+  facts.push(['Land manager', `${esc(agName)} <span class="pill ${agLevel}">${agLevel === 'ok' ? 'public' : agLevel === 'warn' ? 'limited' : 'closed'}</span>`]);
+  if (cpadF) facts.push(['Park / preserve', `${esc(cpadF.UNIT_NAME)}<br><span style="color:var(--muted)">${esc(cpadF.MNG_AGENCY)} · ${esc(cpadF.ACCESS_TYP || '')}</span>${cpadF.PARK_URL ? ` · <a href="${esc(cpadF.PARK_URL)}" target="_blank" rel="noopener">site ↗</a>` : ''}`]);
+  facts.push(['Wilderness', wildF ? `${esc(wildF.NAME)}${wildF.URL ? ` · <a href="${esc(wildF.URL)}" target="_blank" rel="noopener">rules ↗</a>` : ''}` : 'No']);
+  if (t) {
+    const ft = Math.round(t.elevM * 3.28084), s = t.slope;
+    const flat = s < 4 ? ['ok', 'flat'] : s < 8 ? ['warn', 'gentle'] : ['no', 'steep'];
+    facts.push(['Elevation', `<span class="num">${ft.toLocaleString()} ft</span> <span style="color:var(--muted)">(${Math.round(t.elevM).toLocaleString()} m)</span>`]);
+    facts.push(['Ground slope', `<span class="num">${s.toFixed(1)}°</span> <span class="pill ${flat[0]}">${flat[1]}</span><br><span style="color:var(--muted)">From ~15 m elevation cells; small pads may be flatter.</span>`]);
+  }
+  if (road) {
+    const a = road.attributes, g = (...keys) => keys.map(k => a[k]).find(v => v && v !== 'Null' && v !== 'null') || '';
+    const hc = g('High Clearance Vehicles (Dates Open)', 'highclearancevehicle_datesopen');
+    const pv = g('Passenger Vehicle  (Dates Open)', 'passengervehicle_datesopen');
+    facts.push(['Nearest MVUM', `<b>${esc(g('ID', 'id'))}</b> ${esc(g('Name', 'name'))}<br>${esc(g('MVUM_Symbol_Name', 'mvum_symbol_name'))}<br><span style="color:var(--muted)">${esc(g('SurfaceType', 'surfacetype'))}${pv ? ` · cars ${esc(pv)}` : ''}${hc ? ` · high clearance ${esc(hc)}` : ''}</span><br><span style="color:var(--muted)">${esc(g('Forest Name', 'forestname'))}</span>`]);
+  } else if (code === 'USFS') {
+    facts.push(['Nearest MVUM', map.getZoom() >= 10 ? 'No legal motor route right here. Click closer to a road.' : 'Zoom in to 10+ to check roads.']);
+  }
+  if (fire) facts.push(['Fire', `${esc(fire.properties.poly_IncidentName)} · ${Math.round(fire.properties.poly_GISAcres || 0).toLocaleString()} acres · ${fire.properties.attr_PercentContained ?? '?'}% contained`]);
+
+  spot.querySelector('.facts').outerHTML = '';
+  spot.insertAdjacentHTML('beforeend', `<div class="verdict ${level}"><b>${esc(title)}</b><p>${esc(body)}</p></div>
+    <dl class="facts">${facts.map(([k, v]) => `<div class="fact"><dt>${k}</dt><dd>${v}</dd></div>`).join('')}</dl>`);
+}
+function closeSpot() { document.getElementById('spot').hidden = true; map.getSource('pick').setData(emptyFC()); spotSeq++; }
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSpot(); });
+</script>
+</body>
+</html>
