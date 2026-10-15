@@ -290,6 +290,33 @@ async function arcgisGeojson(url, params, signal) {
 const envelope = (extra = {}) => ({ geometry: CA_ENVELOPE, geometryType: 'esriGeometryEnvelope', inSR: '4326', spatialRel: 'esriSpatialRelIntersects', ...extra });
 const emptyFC = () => ({ type: 'FeatureCollection', features: [] });
 
+// One label point per area. Labeling the polygons directly repeats the name in every map tile.
+// Uses the largest part of each area and the middle of its widest horizontal span, so the point
+// always falls inside the shape (a plain centroid can land outside a curved or hollow area).
+function labelPoints(fc) {
+  const ringArea = (r) => { let a = 0; for (let i = 0, j = r.length - 1; i < r.length; j = i++) a += (r[j][0] + r[i][0]) * (r[j][1] - r[i][1]); return Math.abs(a / 2); };
+  const features = [];
+  for (const f of fc.features) {
+    const g = f.geometry; if (!g) continue;
+    const polys = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : [];
+    if (!polys.length) continue;
+    const poly = polys.reduce((best, p) => ringArea(p[0]) > ringArea(best[0]) ? p : best);
+    const lats = poly[0].map(c => c[1]);
+    const y = (Math.min(...lats) + Math.max(...lats)) / 2;
+    const xs = [];
+    for (const ring of poly) for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [x1, y1] = ring[j], [x2, y2] = ring[i];
+      if ((y1 > y) !== (y2 > y)) xs.push(x1 + (y - y1) / (y2 - y1) * (x2 - x1));
+    }
+    xs.sort((a, b) => a - b);
+    let best = null;
+    for (let k = 0; k + 1 < xs.length; k += 2) if (!best || xs[k + 1] - xs[k] > best[1] - best[0]) best = [xs[k], xs[k + 1]];
+    if (!best) continue;
+    features.push({ type: 'Feature', properties: f.properties, geometry: { type: 'Point', coordinates: [(best[0] + best[1]) / 2, y] } });
+  }
+  return { type: 'FeatureCollection', features };
+}
+
 map.on('load', () => {
   // ---------- base maps
   map.addSource('topo', { type: 'raster', tileSize: 256, maxzoom: 16, tiles: ['https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}'], attribution: 'USGS The National Map' });
@@ -318,7 +345,8 @@ map.on('load', () => {
   map.addSource('wild', { type: 'geojson', data: emptyFC(), attribution: 'Wilderness Connect' });
   map.addLayer({ id: 'wild-fill', type: 'fill', source: 'wild', paint: { 'fill-color': '#1d5b3a', 'fill-opacity': 0.12 } });
   map.addLayer({ id: 'wild-line', type: 'line', source: 'wild', paint: { 'line-color': '#1d5b3a', 'line-width': 1.8, 'line-dasharray': [3, 2] } });
-  map.addLayer({ id: 'wild-label', type: 'symbol', source: 'wild', minzoom: 8,
+  map.addSource('wild-pts', { type: 'geojson', data: emptyFC() });
+  map.addLayer({ id: 'wild-label', type: 'symbol', source: 'wild-pts', minzoom: 8,
     layout: { 'text-field': ['get', 'NAME'], 'text-font': ['Noto Sans Medium'], 'text-size': 12, 'symbol-placement': 'point', 'text-max-width': 8 },
     paint: { 'text-color': '#1d5b3a', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 } });
 
@@ -326,7 +354,8 @@ map.on('load', () => {
   map.addSource('fire', { type: 'geojson', data: emptyFC(), attribution: 'NIFC WFIGS' });
   map.addLayer({ id: 'fire-fill', type: 'fill', source: 'fire', paint: { 'fill-color': '#e0452b', 'fill-opacity': 0.35 } });
   map.addLayer({ id: 'fire-line', type: 'line', source: 'fire', paint: { 'line-color': '#b3260f', 'line-width': 2 } });
-  map.addLayer({ id: 'fire-label', type: 'symbol', source: 'fire', minzoom: 7,
+  map.addSource('fire-pts', { type: 'geojson', data: emptyFC() });
+  map.addLayer({ id: 'fire-label', type: 'symbol', source: 'fire-pts', minzoom: 7,
     layout: { 'text-field': ['concat', ['get', 'poly_IncidentName'], ' Fire'], 'text-font': ['Noto Sans Medium'], 'text-size': 12 },
     paint: { 'text-color': '#8c1d0a', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 } });
 
@@ -409,13 +438,13 @@ async function loadStatic() {
   // Wilderness (California only, simplified)
   setStatus('s-wild', 'loading…');
   arcgisGeojson(SVC.wild, { where: "STATE='CA'", outFields: 'NAME,Agency,URL,Acreage', maxAllowableOffset: 0.0015, geometryPrecision: 5 })
-    .then(fc => { map.getSource('wild').setData(fc); setStatus('s-wild', fc.features.length.toLocaleString()); })
+    .then(fc => { map.getSource('wild').setData(fc); map.getSource('wild-pts').setData(labelPoints(fc)); setStatus('s-wild', fc.features.length.toLocaleString()); })
     .catch(() => setStatus('s-wild', 'failed', true));
 
   // Active fire perimeters
   setStatus('s-fire', 'loading…');
   arcgisGeojson(SVC.fire, envelope({ where: '1=1', outFields: 'poly_IncidentName,poly_GISAcres,attr_PercentContained,attr_FireDiscoveryDateTime', maxAllowableOffset: 0.0005, geometryPrecision: 5 }))
-    .then(fc => { map.getSource('fire').setData(fc); setStatus('s-fire', fc.features.length ? `${fc.features.length} active` : 'none active'); })
+    .then(fc => { map.getSource('fire').setData(fc); map.getSource('fire-pts').setData(labelPoints(fc)); setStatus('s-fire', fc.features.length ? `${fc.features.length} active` : 'none active'); })
     .catch(() => setStatus('s-fire', 'failed', true));
 }
 
